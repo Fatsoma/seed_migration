@@ -219,7 +219,7 @@ ActiveRecord::Base.transaction do
         eos
         SeedMigration.registrar.each_with_index do |register_entry, register_index|
           file.write "\n" if register_index > 0
-          register_entry.model.order('id').each_with_index do |instance, instance_index|
+          register_entry.model.order(register_entry.order).each_with_index do |instance, instance_index|
             file.write "\n" if instance_index > 0
             file.write generate_model_creation_string(instance, register_entry)
           end
