@@ -1,3 +1,4 @@
+require 'logger'
 require 'pathname'
 
 module SeedMigration
@@ -20,7 +21,7 @@ module SeedMigration
     def up
       # Check if we already migrated this file
       klass = class_from_path
-      version = @path.basename.to_s.split("_", 2).first
+      version, _ = self.class.parse_migration_filename(@path)
       raise "#{klass} has already been migrated." if SeedMigration::DataMigration.where(version: version).first
 
       start_time = Time.now
@@ -38,7 +39,7 @@ module SeedMigration
         begin
           migration.save!
         rescue StandardError => e
-          puts e
+          SeedMigration::Migrator.logger.error e
         end
         announce("#{klass}: migrated (#{runtime}s)")
       end
@@ -65,6 +66,12 @@ module SeedMigration
         # Delete record of migration
         migration.destroy
         announce("#{klass}: reverted (#{runtime}s)")
+      end
+    end
+
+    def self.check_pending!
+      if get_new_migrations.any?
+        raise SeedMigration::Migrator::PendingMigrationError
       end
     end
 
@@ -105,19 +112,38 @@ module SeedMigration
       create_seed_file
     end
 
+    def self.display_migrations_status
+      logger.info "\ndatabase: #{ActiveRecord::Base.connection_config[:database]}\n\n"
+      logger.info "#{'Status'.center(8)}  #{'Migration ID'.ljust(14)}  Migration Name"
+      logger.info "-" * 50
+
+      up_versions = get_all_migration_versions
+      get_migration_files.each do |file|
+        version, name = parse_migration_filename(file)
+        status = up_versions.include?(version) ? "up" : "down"
+        logger.info "#{status.center(8)}  #{version.ljust(14)}  #{name}"
+      end
+    end
+
     def self.bootstrap(last_timestamp = nil)
-      # replace with logger ?
-      p "Assume seed data migrated up to #{last_timestamp}"
+      logger.info "Assume seed data migrated up to #{last_timestamp}"
       files = get_migration_files(last_timestamp.to_s)
       files.each do |file|
-        name = file.split('/').last
-        version = name.split('_').first
         migration = SeedMigration::DataMigration.new
-        migration.version = version
+        migration.version, _ = parse_migration_filename(file)
         migration.runtime = 0
         migration.migrated_on = DateTime.now
         migration.save!
       end
+    end
+
+    def self.logger
+      set_logger if @logger.nil?
+      @logger
+    end
+
+    def self.set_logger(new_logger = Logger.new($stdout))
+      @logger = new_logger
     end
 
     private
@@ -133,7 +159,7 @@ module SeedMigration
 
     def announce(text)
       length = [0, 75 - text.length].max
-      puts "== %s %s" % [text, "=" * length]
+      SeedMigration::Migrator.logger.info "== %s %s" % [text, "=" * length]
     end
 
     def self.get_new_migrations
@@ -145,7 +171,7 @@ module SeedMigration
         return files
       end
 
-      all_migration_versions = SeedMigration::DataMigration.all.map(&:version)
+      all_migration_versions = get_all_migration_versions
 
       files.each do |file|
         filename = file.split('/').last
@@ -195,6 +221,17 @@ module SeedMigration
 
       # Just in case
       files.sort!
+    end
+
+    def self.get_all_migration_versions
+      SeedMigration::DataMigration.all.map(&:version)
+    end
+
+    def self.parse_migration_filename(filename)
+      basename = File.basename(filename, '.rb')
+      _, version, underscored_name = basename.match(/(\d+)_(.*)/).to_a
+      name = underscored_name.gsub("_", " ").capitalize
+      [version, name]
     end
 
     def self.create_seed_file
@@ -265,7 +302,7 @@ SeedMigration::Migrator.bootstrap(#{last_migration})
             ':without_protection => true'
           end
         model_creation_string = "#{instance.class}.#{create_method}({#{parsed_attributes}}, #{without_protection})"
-      elsif Rails::VERSION::MAJOR == 4
+      elsif Rails::VERSION::MAJOR == 4 || Rails::VERSION::MAJOR == 5
         model_creation_string = "#{instance.class}.#{create_method}(#{parsed_attributes})"
       end
 
@@ -275,6 +312,13 @@ SeedMigration::Migrator.bootstrap(#{last_migration})
 
     def self.create_method
       SeedMigration.use_strict_create? ? 'create!' : 'create'
+    end
+
+    class PendingMigrationError < StandardError
+      def initialize
+        super("Data migrations are pending. To resolve this issue, "\
+          "run the following:\n\n\trake seed:migrate\n")
+      end
     end
   end
 end

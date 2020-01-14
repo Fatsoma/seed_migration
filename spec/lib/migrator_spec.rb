@@ -49,6 +49,18 @@ describe SeedMigration::Migrator do
     end
   end
 
+  describe ".check_pending!" do
+    it "returns nil when no migrations are pending" do
+      SeedMigration::Migrator.run_new_migrations
+      expect(SeedMigration::Migrator.check_pending!).to be_nil
+    end
+
+    it 'raises a PendingMigrationError when migrations are pending' do
+      error = SeedMigration::Migrator::PendingMigrationError
+      expect { SeedMigration::Migrator.check_pending! }.to raise_error(error)
+    end
+  end
+
   describe '.get_new_migrations' do
     before(:each) do
       SeedMigration::Migrator.run_new_migrations
@@ -57,6 +69,19 @@ describe SeedMigration::Migrator do
 
     it 'runs all non ran migrations' do
       expect{SeedMigration::Migrator.run_new_migrations}.to change{SeedMigration::DataMigration.count}.by(1)
+    end
+  end
+
+  describe '.bootstrap' do
+    let(:timestamp) { 5.days.ago.utc.strftime("%Y%m%d%H%M%S") }
+    before(:each) do
+      FileUtils.rm(SeedMigration::Migrator.get_migration_files)
+      Rails::Generators.invoke("seed_migration", ["TestMigrationBefore", timestamp])
+    end
+
+    it 'runs all migrations' do
+      expect{SeedMigration::Migrator.bootstrap}.to change{SeedMigration::DataMigration.count}.by(1)
+      expect(SeedMigration::DataMigration.first.version).to eq(timestamp)
     end
   end
 
@@ -94,6 +119,33 @@ describe SeedMigration::Migrator do
         SeedMigration::Migrator.any_instance.should_receive(:down).once
         SeedMigration::Migrator.should_receive(:create_seed_file).once
         SeedMigration::Migrator.rollback_migrations('1_foo.rb')
+      end
+    end
+
+    describe "rake migrate:status" do
+      before(:each) do
+        SeedMigration::Migrator.run_new_migrations
+        @files = SeedMigration::Migrator.get_migration_files
+      end
+
+      it "should display the appropriate statuses after a migrate" do
+        output = capture_stdout do
+          SeedMigration::Migrator.set_logger(Logger.new($stdout))
+          SeedMigration::Migrator.display_migrations_status
+        end
+
+        expect(output).to contain(@files.count).occurrences_of(" up ")
+      end
+
+      it "should display the appropriate statuses after a migrate/rollback" do
+        SeedMigration::Migrator.rollback_migrations
+        output = capture_stdout do
+          SeedMigration::Migrator.set_logger(Logger.new($stdout))
+          SeedMigration::Migrator.display_migrations_status
+        end
+
+        expect(output).to contain(@files.count - 1).occurrences_of(" up ")
+        expect(output).to contain(1).occurrences_of(" down ")
       end
     end
   end
@@ -142,7 +194,7 @@ describe SeedMigration::Migrator do
         end
 
         it 'should not creates seeds.rb file' do
-          File.exist?(SeedMigration::Migrator::SEEDS_FILE_PATH).should be_false
+          File.exist?(SeedMigration::Migrator::SEEDS_FILE_PATH).should eq(false)
         end
       end
 
@@ -164,7 +216,7 @@ describe SeedMigration::Migrator do
       end
 
       it 'creates seeds.rb file' do
-        File.exists?(File.join(Rails.root, 'db', 'seeds.rb')).should be_true
+        File.exists?(File.join(Rails.root, 'db', 'seeds.rb')).should eq(true)
       end
 
       it 'outputs models creation in seeds.rb file' do
@@ -250,7 +302,7 @@ describe SeedMigration::Migrator do
         SeedMigration::Migrator.run_new_migrations
       end
       it "doesn't generate seed file" do
-        File.exist?(SeedMigration::Migrator::SEEDS_FILE_PATH).should be_false
+        File.exist?(SeedMigration::Migrator::SEEDS_FILE_PATH).should eq(false)
       end
     end
   end
@@ -276,7 +328,7 @@ describe SeedMigration::Migrator do
     end
 
     it 'creates seeds.rb file' do
-      File.exists?(File.join(Rails.root, 'db', 'seeds.rb')).should be_true
+      File.exists?(File.join(Rails.root, 'db', 'seeds.rb')).should eq(true)
     end
 
     it 'evaluates without throwing any errors' do
@@ -360,7 +412,6 @@ describe SeedMigration::Migrator do
   end
 
   describe ".migrations_path" do
-
     context "with default path" do
       it 'it should create migrations in db/data' do
         SeedMigration::Migrator.get_migration_files.each do |f|
@@ -384,6 +435,5 @@ describe SeedMigration::Migrator do
         end
       end
     end
-
   end
 end
